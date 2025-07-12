@@ -12,6 +12,7 @@
 
 #include "qtappwin.h"
 
+#include <filesystem>
 #include <map>
 #include <string>
 #include <vector>
@@ -66,7 +67,6 @@
 #include <QLineEdit>
 #endif
 
-#include <celcompat/filesystem.h>
 #include <celengine/body.h>
 #include <celengine/location.h>
 #include <celengine/observer.h>
@@ -275,7 +275,7 @@ CelestiaAppWindow::init(const CelestiaCommandLineOptions& options)
         configFileName = options.configFileName.toStdString();
 
     // Translate extras directories from QString -> std::string
-    std::vector<fs::path> extrasDirectories;
+    std::vector<std::filesystem::path> extrasDirectories;
     for (const auto& dir : options.extrasDirectories)
         extrasDirectories.push_back(dir.toUtf8().data());
 
@@ -286,6 +286,19 @@ CelestiaAppWindow::init(const CelestiaCommandLineOptions& options)
     auto* progress = new AppProgressNotifier(this);
     alerter = new AppAlerter(this);
     m_appCore->setAlerter(alerter);
+    m_appCore->setScriptSystemAccessHandler([]
+    {
+        QMessageBox msgBox;
+        msgBox.setIcon(QMessageBox::Warning);
+        msgBox.setText(_("Script System Access"));
+        msgBox.setInformativeText(_("This script requests permission to read/write files "
+                                 "and execute external programs. Allowing this can be "
+                                 "dangerous.\n"
+                                 "Do you trust the script and want to allow this?"));
+        msgBox.setStandardButtons(QMessageBox::Yes | QMessageBox::No);
+        msgBox.setDefaultButton(QMessageBox::No);
+        return msgBox.exec() == QMessageBox::Yes ? CelestiaCore::ScriptSystemAccessPolicy::Allow : CelestiaCore::ScriptSystemAccessPolicy::Deny;
+    });
 
     setWindowIcon(QIcon(":/icons/celestia.png"));
 #if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0) && QT_VERSION < QT_VERSION_CHECK(7, 0, 0)
@@ -296,7 +309,7 @@ CelestiaAppWindow::init(const CelestiaCommandLineOptions& options)
 
     if (!options.logFilename.isEmpty())
     {
-        fs::path fn = logPath.absolutePath().toStdString();
+        std::filesystem::path fn = logPath.absolutePath().toStdString();
         m_appCore->setLogFile(fn);
     }
 

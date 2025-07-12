@@ -648,7 +648,7 @@ bool LuaState::handleTickEvent(double dt)
 }
 
 
-int LuaState::loadScript(istream& in, const fs::path& streamname)
+int LuaState::loadScript(istream& in, const std::filesystem::path& streamname)
 {
     char buf[4096];
     ReadChunkInfo info;
@@ -838,7 +838,7 @@ void LuaState::requestIO()
     if (ioMode == IOMode::NotDetermined)
     {
         CelestiaCore* appCore = getAppCore(state, AllErrors);
-        auto policy = appCore->getScriptSystemAccessPolicy();
+        auto policy = appCore->requestScriptSystemAccessPolicy();
         switch (policy)
         {
         case CelestiaCore::ScriptSystemAccessPolicy::Allow:

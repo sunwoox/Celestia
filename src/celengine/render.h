@@ -122,6 +122,13 @@ class Renderer
         double orbitWindowEnd{ 0.5 };
         double orbitPeriodsShown{ 1.0 };
         double linearFadeFraction{ 0.0 };
+
+        float renderAsterismsFadeStartDist{ 600.0f };
+        float renderAsterismsFadeEndDist{ 6.52e4f };
+        float renderBoundariesFadeStartDist{ 6.0f };
+        float renderBoundariesFadeEndDist{ 20.0f };
+        float labelConstellationsFadeStartDist{ 6.0f };
+        float labelConstellationsFadeEndDist{ 20.0f };
 #ifndef GL_ES
         bool useMesaPackInvert{ true };
 #endif
@@ -197,8 +204,6 @@ class Renderer
 
     ColorTableType getStarColorTable() const;
     void setStarColorTable(ColorTableType);
-    [[deprecated]] bool getVideoSync() const;
-    [[deprecated]] void setVideoSync(bool);
     void setSolarSystemMaxDistance(float);
     void setShadowMapSize(unsigned);
 
@@ -652,7 +657,7 @@ class Renderer
 
     std::array<int, 4> m_viewport { 0, 0, 0, 0 };
 
-    typedef std::map<const celestia::ephem::Orbit*, CurvePlot*> OrbitCache;
+    using OrbitCache = std::map<const celestia::ephem::Orbit*, std::unique_ptr<CurvePlot>>;
     OrbitCache orbitCache;
     uint32_t lastOrbitCacheFlush;
 

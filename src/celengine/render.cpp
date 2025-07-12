@@ -130,16 +130,6 @@ static const float MinOrbitSizeForLabel = 20.0f;
 // a label for it.
 static const float MinFeatureSizeForLabel = 20.0f;
 
-/* The maximum distance of the observer to the origin of coordinates before
-   asterism lines and labels start to linearly fade out (in light years) */
-static const float MaxAsterismLabelsConstDist  = 6.0f;
-static const float MaxAsterismLinesConstDist   = 600.0f;
-
-/* The maximum distance of the observer to the origin of coordinates before
-   asterisms labels and lines fade out completely (in light years) */
-static const float MaxAsterismLabelsDist = 20.0f;
-static const float MaxAsterismLinesDist  = 6.52e4f;
-
 // Static meshes and textures used by all instances of Simulation
 
 static bool commonDataInitialized = false;
@@ -293,7 +283,14 @@ Renderer::DetailOptions::DetailOptions() :
     eclipseTextureSize(128),
     orbitWindowEnd(0.5),
     orbitPeriodsShown(1.0),
-    linearFadeFraction(0.0)
+    linearFadeFraction(0.0),
+
+    renderAsterismsFadeStartDist(600.0f),
+    renderAsterismsFadeEndDist(6.52e4f),
+    renderBoundariesFadeStartDist(6.0f),
+    renderBoundariesFadeEndDist(20.0f),
+    labelConstellationsFadeStartDist(6.0f),
+    labelConstellationsFadeEndDist(20.0f)
 {
 }
 
@@ -749,16 +746,6 @@ Renderer::setStarColorTable(ColorTableType ct)
 }
 
 
-bool Renderer::getVideoSync() const
-{
-    return true;
-}
-
-void Renderer::setVideoSync(bool /*sync*/)
-{
-}
-
-
 float Renderer::getAmbientLightLevel() const
 {
     return ambientLightLevel;
@@ -1079,15 +1066,15 @@ void Renderer::renderOrbit(const OrbitPathListEntry& orbitPath,
     const auto* orbit = body != nullptr ? body->getOrbit(t) : orbitPath.star->getOrbit();
 
     CurvePlot* cachedOrbit = nullptr;
-    if (auto cached = orbitCache.find(orbit); cached != orbitCache.end())
+    if (auto cached = orbitCache.lower_bound(orbit);
+        cached != orbitCache.end() && cached->first == orbit)
     {
-        cachedOrbit = cached->second;
+        cachedOrbit = cached->second.get();
         cachedOrbit->setLastUsed(frameCount);
     }
-
-    // If it's not in the cache already
-    if (cachedOrbit == nullptr)
+    else
     {
+        // If it's not in the cache already
         double startTime = t;
 
         // Adjust the number of samples used for aperiodic orbits--these aren't
@@ -1104,12 +1091,10 @@ void Renderer::renderOrbit(const OrbitPathListEntry& orbitPath,
             orbit->getValidRange(begin, end);
 
             if (begin != end)
-            {
                 startTime = begin;
-            }
         }
 
-        cachedOrbit = new CurvePlot(*this);
+        cachedOrbit = orbitCache.emplace_hint(cached, orbit, std::make_unique<CurvePlot>(*this))->second.get();
         cachedOrbit->setLastUsed(frameCount);
 
         OrbitSampler sampler;
@@ -1119,25 +1104,19 @@ void Renderer::renderOrbit(const OrbitPathListEntry& orbitPath,
         sampler.insertForward(cachedOrbit);
 
         // If the orbit cache is full, first try and eliminate some old orbits
-        if (orbitCache.size() > OrbitCacheCullThreshold)
+        // Check for old orbits at most once per frame
+        if (orbitCache.size() > OrbitCacheCullThreshold && lastOrbitCacheFlush != frameCount)
         {
-            // Check for old orbits at most once per frame
-            if (lastOrbitCacheFlush != frameCount)
+            // In C++20 replace the below loop with std::erase_if
+            for (auto iter = orbitCache.begin(); iter != orbitCache.end();)
             {
-                for (auto iter = orbitCache.begin(); iter != orbitCache.end();)
-                {
-                    // Tricky code to eliminate a node in the orbit cache without screwing
-                    // up the iterator. Should work in all STL implementations.
-                    if (frameCount - iter->second->lastUsed() > OrbitCacheRetireAge)
-                        orbitCache.erase(iter++);
-                    else
-                        ++iter;
-                }
-                lastOrbitCacheFlush = frameCount;
+                if (frameCount - iter->second->lastUsed() > OrbitCacheRetireAge)
+                    iter = orbitCache.erase(iter);
+                else
+                    ++iter;
             }
+            lastOrbitCacheFlush = frameCount;
         }
-
-        orbitCache[orbit] = cachedOrbit;
     }
 
     if (cachedOrbit->empty())
@@ -1609,7 +1588,7 @@ void Renderer::render(const Observer& observer,
 
     Matrices asterismMVP = { &projection, &modelView };
 
-    float dist = observerPosLY.norm() * 1.6e4f;
+    float dist = observerPosLY.norm();
     renderAsterisms(universe, dist, asterismMVP);
     renderBoundaries(universe, dist, asterismMVP);
 
@@ -3057,7 +3036,9 @@ void Renderer::renderStar(const Star& star,
 static float cometDustTailLength(float distanceToSun,
                                  float radius)
 {
-    return (1.0e8f / distanceToSun) * (radius / 5.0f) * 1.0e7f;
+    // To avoid absurdly huge comet sizes for sungrazers, use an arbitrary
+    // minimum value of 1e7 km for the distance.
+    return (1.0e8f / std::max(distanceToSun, 1.0e7f)) * (radius / 5.0f) * 1.0e7f;
 }
 
 
@@ -3095,6 +3076,12 @@ void Renderer::renderAsterisms(const Universe& universe, float dist, const Matri
 {
     auto *asterisms = universe.getAsterisms();
 
+    //*** Asterism fading parameters
+
+    //   The two values are for distances from centre where the asterism begins fading and finish fading, respectively.
+    const float RenderAsterismsFadeStartDist = detailOptions.renderAsterismsFadeStartDist;
+    const float RenderAsterismsFadeEndDist   = detailOptions.renderAsterismsFadeEndDist;
+
     if (!util::is_set(renderFlags, RenderFlags::ShowDiagrams) || asterisms == nullptr)
         return;
 
@@ -3104,10 +3091,10 @@ void Renderer::renderAsterisms(const Universe& universe, float dist, const Matri
     }
 
     float opacity = 1.0f;
-    if (dist > MaxAsterismLinesConstDist)
+    if (dist > RenderAsterismsFadeStartDist)
     {
-        opacity = std::clamp((MaxAsterismLinesConstDist - dist)
-                             / (MaxAsterismLinesDist - MaxAsterismLinesConstDist) + 1.0f,
+        opacity = std::clamp((RenderAsterismsFadeStartDist - dist)
+                             / (RenderAsterismsFadeEndDist - RenderAsterismsFadeStartDist) + 1.0f,
                              0.0f,
                              1.0f);
     }
@@ -3125,6 +3112,13 @@ void Renderer::renderAsterisms(const Universe& universe, float dist, const Matri
 void Renderer::renderBoundaries(const Universe& universe, float dist, const Matrices& mvp)
 {
     auto boundaries = universe.getBoundaries();
+
+    //*** Boundaries fading parameters
+
+    //   The two values are for distances from centre where the boundaries begins fading and finish fading, respectively.
+    const float RenderBoundariesFadeStartDist = detailOptions.renderBoundariesFadeStartDist;
+    const float RenderBoundariesFadeEndDist   = detailOptions.renderBoundariesFadeEndDist;
+
     if (!util::is_set(renderFlags, RenderFlags::ShowBoundaries) || boundaries == nullptr)
         return;
 
@@ -3136,10 +3130,10 @@ void Renderer::renderBoundaries(const Universe& universe, float dist, const Matr
     /* We'll linearly fade the boundaries as a function of the
        observer's distance to the origin of coordinates: */
     float opacity = 1.0f;
-    if (dist > MaxAsterismLabelsConstDist)
+    if (dist > RenderBoundariesFadeStartDist)
     {
-        opacity = std::clamp((MaxAsterismLabelsConstDist - dist)
-                             / (MaxAsterismLabelsDist - MaxAsterismLabelsConstDist) + 1.0f,
+        opacity = std::clamp((RenderBoundariesFadeStartDist - dist)
+                             / (RenderBoundariesFadeEndDist - RenderBoundariesFadeStartDist) + 1.0f,
                              0.0f,
                              1.0f);
     }
@@ -4013,6 +4007,12 @@ void Renderer::labelConstellations(const AsterismList& asterisms,
 {
     Vector3f observerPos = observer.getPosition().toLy().cast<float>();
 
+    //*** Constellation label fading parameters
+
+    //   The two values are for distances from centre where the labels begins fading and finish fading, respectively.
+    const float LabelConstellationsFadeStartDist = detailOptions.labelConstellationsFadeStartDist;
+    const float LabelConstellationsFadeEndDist   = detailOptions.labelConstellationsFadeEndDist;
+
     for (const auto& ast : asterisms)
     {
         if (!ast.getActive())
@@ -4031,10 +4031,10 @@ void Renderer::labelConstellations(const AsterismList& asterisms,
             // We'll linearly fade the labels as a function of the
             // observer's distance to the origin of coordinates:
             float opacity = 1.0f;
-            if (float dist = observerPos.norm(); dist > MaxAsterismLabelsConstDist)
+            if (float dist = observerPos.norm(); dist > LabelConstellationsFadeStartDist)
             {
-                opacity = std::clamp((MaxAsterismLabelsConstDist - dist)
-                                     / (MaxAsterismLabelsDist - MaxAsterismLabelsConstDist) + 1.0f,
+                opacity = std::clamp((LabelConstellationsFadeStartDist - dist)
+                                     / (LabelConstellationsFadeEndDist - LabelConstellationsFadeStartDist) + 1.0f,
                                      0.0f,
                                      1.0f);
             }
@@ -4643,11 +4643,11 @@ static void draw_rectangle_solid(const Renderer &renderer,
 
     glDrawArrays(GL_TRIANGLE_FAN, 0, 4);
 
-    glDisableVertexAttribArray(CelestiaGLProgram::ColorAttributeIndex);
+    glDisableVertexAttribArray(CelestiaGLProgram::VertexCoordAttributeIndex);
     if (r.tex != nullptr)
         glDisableVertexAttribArray(CelestiaGLProgram::TextureCoord0AttributeIndex);
     if (r.hasColors)
-        glDisableVertexAttribArray(CelestiaGLProgram::VertexCoordAttributeIndex);
+        glDisableVertexAttribArray(CelestiaGLProgram::ColorAttributeIndex);
     glBindBuffer(GL_ARRAY_BUFFER, 0);
 }
 
