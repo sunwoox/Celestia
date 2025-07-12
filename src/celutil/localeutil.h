@@ -8,7 +8,7 @@
 // of the License, or (at your option) any later version.
 
 #pragma once
-
+#include <locale.h>
 #include <stdlib.h>  // for strtod_l
 #if defined __APPLE__ || defined(__FreeBSD__)
 # include <xlocale.h>  // for LC_NUMERIC_MASK on OS X
